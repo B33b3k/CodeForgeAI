@@ -1,0 +1,42 @@
+def find_median_sorted_arrays(nums1, nums2):
+    """Finds the median of two sorted arrays in O(log(m+n)) time."""
+
+    m, n = len(nums1), len(nums2)
+    if not isinstance(nums1, list) or not isinstance(nums2, list):
+        logger.error("Invalid input: nums1 and nums2 must be lists.")
+        raise TypeError("Invalid input: nums1 and nums2 must be lists.")
+    if not all(isinstance(num, (int, float)) for num in nums1 + nums2):
+        logger.error("Invalid input: Lists must contain only numbers.")
+        raise ValueError("Invalid input: Lists must contain only numbers.")
+    if m + n == 0:
+        logger.warning("Empty input arrays. Returning None.")
+        return None
+
+
+    if m > n:
+        nums1, nums2 = nums2, nums1  # Ensure nums1 is the shorter array
+        m, n = n, m
+
+    low, high = 0, m
+    while low <= high:
+        partitionX = (low + high) // 2
+        partitionY = (m + n + 1) // 2 - partitionX
+
+        maxLeftX = nums1[partitionX - 1] if partitionX > 0 else float('-inf')
+        minRightX = nums1[partitionX] if partitionX < m else float('inf')
+
+        maxLeftY = nums2[partitionY - 1] if partitionY > 0 else float('-inf')
+        minRightY = nums2[partitionY] if partitionY < n else float('inf')
+
+        if maxLeftX <= minRightY and maxLeftY <= minRightX:
+            if (m + n) % 2 == 0:
+                return (max(maxLeftX, maxLeftY) + min(minRightX, minRightY)) / 2
+            else:
+                return max(maxLeftX, maxLeftY)
+        elif maxLeftX > minRightY:
+            high = partitionX - 1
+        else:
+            low = partitionX + 1
+
+    logger.error("Median could not be found. Check input arrays.")
+    raise Exception("Median could not be found. Check input arrays.")
