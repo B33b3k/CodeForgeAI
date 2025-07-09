@@ -11,7 +11,8 @@ import time
 from typing import Dict
 from fastapi.middleware.cors import CORSMiddleware
 import threading
-
+from .utils import get_llm
+from .utils import count_tokens
 
 
 app = FastAPI()
@@ -30,8 +31,12 @@ task_logs: Dict[str, list] = {}
 task_status: Dict[str, str] = {}
 task_graphs: Dict[str, dict] = {}
 
-# Placeholder: Replace with your actual agent_executor instance
 agent_executor = None  # TODO: set this to your real agent_executor
+
+# Gemini free tier: 16,000 tokens/request, 2,000,000 tokens/month (as of 2024)
+token_limit = 2_000_000
+used_tokens = 0
+per_task_tokens = {}
 
 def log_for_task(task_id, message):
     timestamp = time.strftime('%H:%M:%S', time.localtime())
@@ -41,7 +46,6 @@ def log_for_task(task_id, message):
 
 @app.get("/agents")
 async def get_agents():
-    # List the available agents in their default order
     return {
         "agents": [
             "PreprocessorAgent",
@@ -58,7 +62,7 @@ async def get_agents():
 async def generate_code(request: Request, background_tasks: BackgroundTasks):
     data = await request.json()
     task = data.get("task")
-    agent_order = data.get("agent_order")  # Optional custom agent order
+    agent_order = data.get("agent_order") 
     if not task:
         return JSONResponse(status_code=400, content={"error": "Missing 'task' in request body"})
     task_id = str(uuid.uuid4())
@@ -68,6 +72,7 @@ async def generate_code(request: Request, background_tasks: BackgroundTasks):
     return {"task_id": task_id, "status": "pending"}
 
 def run_pipeline_task(task_id, task, agent_order=None):
+    global used_tokens
     try:
         default_order = [
             "PreprocessorAgent",
@@ -146,10 +151,15 @@ def run_pipeline_task(task_id, task, agent_order=None):
                             "animated": True
                         })
         task_graphs[task_id] = {"nodes": nodes, "edges": edges}
+        per_task_tokens[task_id] = 0
         for agent in order:
             if agent == "PreprocessorAgent":
                 log_for_task(task_id, "PreprocessorAgent: Starting preprocessing")
                 spec = graph.preprocessor.run(task)
+                # Count tokens for preprocessor
+                pre_tokens = count_tokens(task)
+                used_tokens += pre_tokens
+                per_task_tokens[task_id] += pre_tokens
                 log_for_task(task_id, f"PreprocessorAgent: Extracted language={spec.get('language')}, goal='{spec.get('task_spec')}', inputs={spec.get('inputs')}, outputs={spec.get('outputs')}")
                 if not spec.get("language"):
                     raise ValueError("Failed to extract language from the request. Please check your prompt or LLM output.")
@@ -158,10 +168,18 @@ def run_pipeline_task(task_id, task, agent_order=None):
                 for loop in range(3):
                     log_for_task(task_id, f"CodeGenAgent: Starting code generation (attempt {loop+1})")
                     state["generated_code"] = graph.codegen.run(state["language"], state["task_spec"])
+                    # Count tokens for codegen
+                    codegen_tokens = count_tokens(state["task_spec"])
+                    used_tokens += codegen_tokens
+                    per_task_tokens[task_id] += codegen_tokens
                     code_lines = state["generated_code"].count('\n') + 1 if state["generated_code"] else 0
                     log_for_task(task_id, f"CodeGenAgent: Generated {code_lines} lines of {state['language']} code")
                     log_for_task(task_id, f"ExtractorAgent: Starting code extraction")
                     state["clean_code"] = graph.extractor.run(state["generated_code"])
+                    # Count tokens for extractor
+                    extractor_tokens = count_tokens(state["generated_code"])
+                    used_tokens += extractor_tokens
+                    per_task_tokens[task_id] += extractor_tokens
                     if not state["clean_code"] or len(state["clean_code"]) < 5:
                         log_for_task(task_id, f"ExtractorAgent: Code extraction failed, retrying...")
                         continue
@@ -171,16 +189,27 @@ def run_pipeline_task(task_id, task, agent_order=None):
                     testgen_result = {}
                     threads = []
                     def run_review():
+                        global used_tokens, per_task_tokens
                         log_for_task(task_id, f"ReviewAgent: Starting code review")
                         review = graph.review.run(state["language"], state["clean_code"])
+                        review_tokens = count_tokens(state["clean_code"])
+                        used_tokens += review_tokens
+                        per_task_tokens[task_id] += review_tokens
                         review_result["review"] = review
                         passed = graph.quality.run(review)
+                        quality_tokens = count_tokens(review)
+                        used_tokens += quality_tokens
+                        per_task_tokens[task_id] += quality_tokens
                         review_result["review_passed"] = passed
                         log_for_task(task_id, f"ReviewAgent: Review {'passed' if passed else 'failed'}. Summary: {review[:100]}...")
                     def run_testgen():
+                        global used_tokens, per_task_tokens
                         if state["language"].lower() in ["python", "py", "javascript", "js"]:
                             log_for_task(task_id, f"TestGenAgent: Generating test code")
                             test_code = graph.testgen.run(state["language"], state["clean_code"])
+                            testgen_tokens = count_tokens(state["clean_code"])
+                            used_tokens += testgen_tokens
+                            per_task_tokens[task_id] += testgen_tokens
                             testgen_result["test_code"] = test_code
                             log_for_task(task_id, f"TestGenAgent: Test code generated ({len(test_code.splitlines())} lines)")
                     t1 = threading.Thread(target=run_review)
@@ -202,14 +231,20 @@ def run_pipeline_task(task_id, task, agent_order=None):
                 if state.get("language", "").lower() in ["python", "py"]:
                     log_for_task(task_id, f"ExecuteAgent: Starting code execution")
                     state["execution_output"] = graph.execute.run(state["language"], state["clean_code"])
+                    exec_tokens = count_tokens(state["clean_code"])
+                    used_tokens += exec_tokens
+                    per_task_tokens[task_id] += exec_tokens
                     log_for_task(task_id, f"ExecuteAgent: Execution output: {state['execution_output'][:100]}...")
         ext = graph._get_ext(state["language"])
         code_path = f"generated/code.{ext}"
-        with open(code_path, "w") as f:
-            f.write(state["clean_code"] or "")
-        if state.get("test_code"):
+        clean_code = state.get("clean_code") if state else None
+        if isinstance(clean_code, str) and clean_code:
+            with open(code_path, "w") as f:
+                f.write(clean_code)
+        test_code = state.get("test_code") if state else None
+        if isinstance(test_code, str) and test_code:
             with open(f"generated/test_code.{ext}", "w") as f:
-                f.write(state["test_code"])
+                f.write(test_code)
         log_for_task(task_id, f"Files saved: {code_path}, generated/test_code.{ext if state.get('test_code') else ''}")
         task_results[task_id] = {
             "language": state["language"],
@@ -220,7 +255,10 @@ def run_pipeline_task(task_id, task, agent_order=None):
             "execution_output": state.get("execution_output"),
             "code_file": code_path,
             "test_file": f"generated/test_code.{ext}" if state.get("test_code") else None,
-            "logs_file": "generated/logs.txt"
+            "logs_file": "generated/logs.txt",
+            "tokens_used": per_task_tokens[task_id],
+            "tokens_remaining": max(0, token_limit - used_tokens),
+            "token_limit": token_limit
         }
         task_status[task_id] = "complete"
         log_for_task(task_id, "Task complete.")
@@ -228,6 +266,14 @@ def run_pipeline_task(task_id, task, agent_order=None):
         task_status[task_id] = "error"
         log_for_task(task_id, f"Error: {str(e)}")
         task_results[task_id] = {"error": str(e)}
+
+@app.get("/tokens")
+async def get_tokens():
+    return {
+        "used": used_tokens,
+        "remaining": max(0, token_limit - used_tokens),
+        "limit": token_limit
+    }
 
 @app.get("/logs/{task_id}")
 async def get_logs(task_id: str):
@@ -240,7 +286,13 @@ async def get_logs(task_id: str):
 @app.get("/status/{task_id}")
 async def get_status(task_id: str):
     status = task_status.get(task_id, "not_found")
-    return {"task_id": task_id, "status": status}
+    return {
+        "task_id": task_id,
+        "status": status,
+        "tokens_used": per_task_tokens.get(task_id, 0),
+        "tokens_remaining": max(0, token_limit - used_tokens),
+        "token_limit": token_limit
+    }
 
 @app.get("/result/{task_id}")
 async def get_result(task_id: str):

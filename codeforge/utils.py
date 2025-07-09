@@ -10,6 +10,16 @@ try:
 except ImportError:
     ChatGoogleGenerativeAI = None
 
+# --- Token counting utility ---
+def count_tokens(text: str, model: str = "gpt-3.5-turbo") -> int:
+    try:
+        import tiktoken
+        enc = tiktoken.encoding_for_model(model)
+        return len(enc.encode(text))
+    except Exception:
+        # Fallback: rough estimate (1 token ≈ 4 chars for English)
+        return max(1, len(text) // 4)
+
 def get_llm():
     provider = os.getenv("USE_PROVIDER", "openai")
     if provider == "gemini" and ChatGoogleGenerativeAI:

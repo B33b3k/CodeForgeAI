@@ -81,7 +81,7 @@ class CodeForgeGraph:
         else:
             logging.info(f"CodeGenAgent: Max attempts reached. Proceeding with last generated code.")
 
-        if state["language"].lower() in ["python", "py", "javascript", "js"]:
+        if state["language"].lower() in ["python", "py"]:
             logging.info(f"TestGenAgent: Generating test code")
             state["test_code"] = self.testgen.run(state["language"], state["clean_code"])
             logging.info(f"TestGenAgent: Test code generated ({len(state['test_code'].splitlines())} lines)")

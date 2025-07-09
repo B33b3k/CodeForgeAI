@@ -152,3 +152,38 @@ Outputs will be saved in `generated/`:
 
 ---
 MIT License 
+
+---
+
+## Agent Execution Graph
+
+The Agent Execution Graph is a core architectural feature of CodeForgeAI, designed to orchestrate the flow of tasks through a modular pipeline of intelligent agents. Each agent is responsible for a distinct phase of the software development lifecycle, enabling robust, extensible, and auditable automation.
+
+### Purpose
+- **Orchestration:** Coordinates the sequential and parallel execution of specialized agents (e.g., preprocessing, code generation, review, testing, execution).
+- **Transparency:** Provides a clear, visual representation of the pipeline, making it easy to track progress, debug issues, and extend functionality.
+- **Extensibility:** New agents can be integrated seamlessly, and the execution order can be customized for advanced workflows.
+
+### Structure
+- **Nodes:** Each node represents an autonomous agent responsible for a specific task (e.g., PreprocessorAgent, CodeGenAgent, ExtractorAgent, ReviewAgent, QualityCheckAgent, TestGenAgent, ExecuteAgent).
+- **Edges:** Directed edges define the flow of data and control between agents. Some agents (e.g., ReviewAgent and TestGenAgent) may execute in parallel after code extraction.
+
+### Example Execution Graph
+
+```mermaid
+graph TD
+    A["PreprocessorAgent"] --> B["CodeGenAgent"]
+    B --> C["ExtractorAgent"]
+    C --> D["ReviewAgent"]
+    C --> E["TestGenAgent"]
+    D --> F["QualityCheckAgent"]
+    F --> G["ExecuteAgent"]
+    E --> G
+```
+
+### Key Features
+- **Parallelism:** Certain agents (e.g., Review and Test Generation) can operate concurrently to optimize throughput.
+- **Dynamic Tracking:** The graph is dynamically updated and visualized during task execution, providing real-time feedback.
+- **Auditability:** Each agent logs its actions and results, supporting traceability and compliance.
+
+--- 
